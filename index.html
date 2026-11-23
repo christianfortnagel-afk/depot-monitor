@@ -227,10 +227,14 @@ const set = (id, txt, v) => { const el = $(id); el.textContent = txt; if (v !== 
 const b64e = (s) => btoa(unescape(encodeURIComponent(s))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const b64d = (s) => decodeURIComponent(escape(atob(s.replace(/-/g,'+').replace(/_/g,'/'))));
 function readHoldings() {
+  let fromLink = null, fromDevice = null;
   const m = location.hash.match(/d=([A-Za-z0-9_-]+)/);
-  if (m) { try { const h = JSON.parse(b64d(m[1])); store(h); return h; } catch (e) {} }
-  try { const s = localStorage.getItem('depot-holdings'); if (s) return JSON.parse(s); } catch (e) {}
-  return null;
+  if (m) { try { fromLink = JSON.parse(b64d(m[1])); } catch (e) {} }
+  try { const s = localStorage.getItem('depot-holdings'); if (s) fromDevice = JSON.parse(s); } catch (e) {}
+  /* Neuerer Stand gewinnt – so überschreibt ein alter Home-Bildschirm-Link keine Änderung auf dem Gerät */
+  const h = !fromLink ? fromDevice : !fromDevice ? fromLink : ((fromLink.t || 0) >= (fromDevice.t || 0) ? fromLink : fromDevice);
+  if (h && h !== fromDevice) store(h);
+  return h;
 }
 function store(h) { try { localStorage.setItem('depot-holdings', JSON.stringify(h)); } catch (e) {} }
 const linkFor = (h) => location.origin + location.pathname + '#d=' + b64e(JSON.stringify(h));
@@ -438,7 +442,7 @@ $('form').addEventListener('submit', (e) => {
     if (s > 0 && c > 0) p[x.id] = [s, c];
   }
   if (!Object.keys(p).length) return;
-  H = {v: 1, p}; store(H);
+  H = {v: 1, t: Date.now(), p}; store(H);
   history.replaceState(null, '', '#d=' + b64e(JSON.stringify(H)));
   showLink(); renderAll();
   $('saveBtn').textContent = 'Gespeichert ✓'; setTimeout(() => { $('saveBtn').textContent = 'Speichern'; }, 1500);
