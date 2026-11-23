@@ -89,7 +89,7 @@ tbody tr.on{background:color-mix(in srgb,var(--acc) 10%,transparent)}
 .dates .x{color:var(--muted);font-size:14px}
 .empty{padding:28px 18px;text-align:center;color:var(--muted)}
 .foot{margin-top:32px;font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:14px}
-dialog{border:0;border-radius:14px;padding:0;max-width:min(620px,94vw);width:100%;background:var(--panel);color:var(--ink);box-shadow:0 20px 60px rgba(0,0,0,.3)}
+dialog{border:0;border-radius:14px;padding:0;max-height:min(92vh,92dvh);overflow:auto;overscroll-behavior:contain;max-width:min(620px,94vw);width:100%;background:var(--panel);color:var(--ink);box-shadow:0 20px 60px rgba(0,0,0,.3)}
 dialog::backdrop{background:rgba(0,0,0,.45)}
 .dlg{padding:20px;display:grid;gap:14px}
 .form{display:grid;gap:8px}
@@ -186,6 +186,11 @@ input{font:inherit;font-size:16px;width:100%;min-height:44px;padding:6px 10px;bo
     <h2>Bestand</h2>
     <p class="muted" style="margin:0;font-size:14px">Stückzahlen und Einstandswert (gesamt, in €) wie in der ING-Depotübersicht. Gespeichert wird nur auf diesem Gerät und im Link – nicht auf dem Server.</p>
     <div class="form" id="formRows"><div class="frow h"><span>Wertpapier</span><span style="text-align:right">Stück</span><span style="text-align:right">Einstand €</span></div></div>
+    <h3 style="margin-top:6px">Sparplan</h3>
+    <p class="muted" style="margin:0;font-size:14px">Monatliche Sparraten werden ab dem nächsten Ausführungstag automatisch eingerechnet (Stücke = Betrag ÷ Xetra-Schlusskurs am Ausführungstag, geschätzt). Beim Speichern gilt der eingetragene Bestand als Stand von heute.</p>
+    <div class="form" id="planRows">
+      <div class="frow"><label for="planDay">Ausführung am</label><input id="planDay" inputmode="numeric" autocomplete="off"><span class="muted" style="font-size:14px">. des Monats</span></div>
+    </div>
     <div id="linkWrap" hidden>
       <p style="margin:0 0 6px;font-size:14px"><b>Dein persönlicher Link</b> – auf jedem Gerät einmal öffnen bzw. als Lesezeichen / Home-Bildschirm speichern:</p>
       <div class="linkbox" id="linkBox"></div>
@@ -244,9 +249,37 @@ let PR = null, NEWS = [], STATE = {range: 65, sel: 'xaix', P: [], T: null, hist:
 try { const s = localStorage.getItem('depot-sel'); if (s) STATE.sel = s; } catch (e) {}
 
 /* ---------- Rechnen ---------- */
+function effective() {
+  const p = {}; for (const k in (H && H.p) || {}) p[k] = H.p[k].map(Number);
+  const out = {p, n: 0, last: null};
+  const sp = H && H.s; if (!sp || !sp.p || !PR) return out;
+  const day = Math.min(28, Math.max(1, Number(sp.d) || 1));
+  const asof = H.a || '1970-01-01', today = new Date().toISOString().slice(0, 10);
+  let y = Number(asof.slice(0, 4)), m = Number(asof.slice(5, 7));
+  for (let guard = 0; guard < 240; guard++) {
+    const D = y + '-' + String(m).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+    if (D > today) break;
+    if (D > asof) {
+      let done = false;
+      const lim = new Date(Date.parse(D) + 10 * 864e5).toISOString().slice(0, 10);
+      for (const id in sp.p) {
+        const amt = Number(sp.p[id]); if (!(amt > 0)) continue;
+        const ser = PR.series[id] || [];
+        const hit = ser.find(([d]) => d >= D && d <= lim);
+        if (!hit) continue;
+        if (!p[id]) p[id] = [0, 0];
+        p[id][0] += amt / hit[1]; p[id][1] += amt; done = true;
+      }
+      if (done) { out.n++; out.last = D; }
+    }
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
 function compute() {
-  const P = POS.filter((p) => H && H.p && H.p[p.id]).map((p) => {
-    const [shares, cost] = H.p[p.id].map(Number);
+  const EFF = effective(); STATE.eff = EFF;
+  const P = POS.filter((p) => EFF.p[p.id] && EFF.p[p.id][0] > 0).map((p) => {
+    const [shares, cost] = EFF.p[p.id];
     const s = (PR && PR.series[p.id]) || [];
     const last = s[s.length - 1], prev = s[s.length - 2];
     const close = last ? last[1] : null, value = close == null ? null : shares * close;
@@ -324,6 +357,12 @@ function renderTop() {
   L.append('Depotwert ', b(eur(T.value)), ' zum Xetra-Schluss vom ' + dde(T.asof) + '. Am letzten Handelstag ', b(seur(T.daychg), T.daychg),
     ' (' + spct(T.daypct) + '), seit Kauf ', b(seur(T.pl), T.pl), ' (' + spct(T.plpct) + ').');
   set('kValue', eur(T.value)); set('kCost', 'Einstand ' + eur(T.cost));
+  const E = STATE.eff, sp = H.s;
+  if (sp && sp.p) {
+    const sum = Object.values(sp.p).reduce((a, v) => a + Number(v || 0), 0);
+    const nxt = (() => { const t = new Date(); let y = t.getFullYear(), mo = t.getMonth() + 1; const d = Number(sp.d) || 1; if (t.getDate() >= d) { mo++; if (mo > 12) { mo = 1; y++; } } return String(d).padStart(2, '0') + '.' + String(mo).padStart(2, '0') + '.' + y; })();
+    L.append(' Sparplan ' + eur0(sum) + '/Monat, nächste Ausführung ' + nxt + (E.n ? '; seit Abgleich am ' + dde(H.a) + ' ' + E.n + '× eingerechnet (geschätzt).' : '.'));
+  }
   set('kDay', seur(T.daychg), T.daychg); set('kDayPct', spct(T.daypct), T.daypct);
   set('kPl', seur(T.pl), T.pl); set('kPlPct', spct(T.plpct), T.plpct);
   set('kTheme', pct1(T.themepct));
@@ -424,9 +463,20 @@ function openDlg() {
     const lb = document.createElement('label'); lb.htmlFor = 's_' + p.id; lb.textContent = p.kurz;
     const i1 = document.createElement('input'); i1.id = 's_' + p.id; i1.inputMode = 'decimal'; i1.autocomplete = 'off';
     const i2 = document.createElement('input'); i2.id = 'c_' + p.id; i2.inputMode = 'decimal'; i2.autocomplete = 'off'; i2.setAttribute('aria-label', 'Einstand ' + p.kurz);
-    const cur = H && H.p && H.p[p.id];
+    const src = (STATE.eff && STATE.eff.p) || (H && H.p) || {};
+    const cur = src[p.id] && src[p.id][0] > 0 ? [Math.round(src[p.id][0] * 1e5) / 1e5, Math.round(src[p.id][1] * 100) / 100] : null;
     if (cur) { i1.value = String(cur[0]).replace('.', ','); i2.value = String(cur[1]).replace('.', ','); }
     row.append(lb, i1, i2); wrap.append(row);
+  }
+  const pr = $('planRows'); pr.querySelectorAll('.frow.pl').forEach((n) => n.remove());
+  $('planDay').value = (H && H.s && H.s.d) || 7;
+  for (const p of POS) {
+    const row = document.createElement('div'); row.className = 'frow pl';
+    const lb = document.createElement('label'); lb.htmlFor = 'pl_' + p.id; lb.textContent = p.kurz;
+    const i = document.createElement('input'); i.id = 'pl_' + p.id; i.inputMode = 'decimal'; i.autocomplete = 'off'; i.placeholder = '0';
+    const v = H && H.s && H.s.p && H.s.p[p.id]; if (v) i.value = String(v).replace('.', ',');
+    const u = document.createElement('span'); u.className = 'muted'; u.style.fontSize = '14px'; u.textContent = '€ / Monat';
+    row.append(lb, i, u); pr.append(row);
   }
   showLink();
   if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
@@ -442,7 +492,12 @@ $('form').addEventListener('submit', (e) => {
     if (s > 0 && c > 0) p[x.id] = [s, c];
   }
   if (!Object.keys(p).length) return;
-  H = {v: 1, t: Date.now(), p}; store(H);
+  const plan = {};
+  for (const x of POS) { const v = numKeep($('pl_' + x.id).value || '0'); if (v > 0) plan[x.id] = v; }
+  const d = Math.min(28, Math.max(1, Math.round(Number($('planDay').value) || 7)));
+  H = {v: 1, t: Date.now(), a: new Date().toISOString().slice(0, 10), p};
+  if (Object.keys(plan).length) H.s = {d, p: plan};
+  store(H);
   history.replaceState(null, '', '#d=' + b64e(JSON.stringify(H)));
   showLink(); renderAll();
   $('saveBtn').textContent = 'Gespeichert ✓'; setTimeout(() => { $('saveBtn').textContent = 'Speichern'; }, 1500);
