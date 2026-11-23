@@ -1,0 +1,52 @@
+name: Kurse aktualisieren und veröffentlichen
+
+on:
+  schedule:
+    - cron: "25 17 * * 1-5"   # werktags 18:25 MEZ / 19:25 MESZ, nach Xetra-Schluss
+  workflow_dispatch:           # manuell: Actions → diesen Workflow → Run workflow
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: depot-monitor
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        if: github.event_name != 'push'
+        with:
+          python-version: "3.12"
+
+      - name: Kurse abrufen
+        if: github.event_name != 'push'
+        env:
+          ALPHAVANTAGE_KEY: ${{ secrets.ALPHAVANTAGE_KEY }}
+        run: python scripts/fetch_prices.py
+
+      - name: Kurse speichern
+        if: github.event_name != 'push'
+        run: |
+          git config user.name "depot-bot"
+          git config user.email "depot-bot@users.noreply.github.com"
+          git add data/prices.json
+          git diff --cached --quiet || (git commit -m "Kurse aktualisiert" && git push)
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - id: deploy
+        uses: actions/deploy-pages@v4
